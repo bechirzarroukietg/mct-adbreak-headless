@@ -1,0 +1,25 @@
+# Node modules
+node_modules/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment variables
+.env
+
+# Output files
+youtube-ad-breaks.json
+youtube-ad-breaks.csv
+cookies.json
+videosListUrl.txt
+
+# VSCode
+.vscode/
