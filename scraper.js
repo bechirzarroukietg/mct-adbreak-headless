@@ -21,7 +21,12 @@ async function scrapeVideosList(page) {
   await sleep(60*1000);
   videosListUrl = page.url();
 
+  let pageTimes = [];
+  let videoTimes = [];
+  let totalVideos = 0;
+  let processedVideoIds = new Set(); // Keep track of processed video IDs
   while (hasNextPage) {
+    const pageStart = Date.now();
     console.log(`Scraping videos list page ${pageNum}...`);
     // Wait for thumbnails to load
     await page.waitForSelector('div#video-thumbnail a#thumbnail-anchor', { timeout: 15000 });
@@ -29,8 +34,19 @@ async function scrapeVideosList(page) {
     console.log(`Found ${videoLinks.length} videos on page ${pageNum}`);
 
     for (let i = 0; i < videoLinks.length; i++) {
+      const videoStart = Date.now();
       const videoUrl = videoLinks[i];
+      const videoId = extractVideoIdFromUrl(videoUrl);
+      
+      // Check if we've already processed this video
+      if (processedVideoIds.has(videoId)) {
+        console.log(`⚠️  Duplicate video detected: ${videoId} - Already processed, skipping.`);
+        continue;
+      }
+      
       console.log(`Processing video ${i + 1} of ${videoLinks.length}: ${videoUrl}`);
+      processedVideoIds.add(videoId); // Mark as processed
+      
       try {
         await page.goto(videoUrl, { waitUntil: 'networkidle2', timeout: 90000 }); // 90 seconds
         await sleep(3000);
@@ -43,7 +59,6 @@ async function scrapeVideosList(page) {
           }
         } catch (e) { console.log('Editor tab not found or click failed'); }
         // Scrape ad break data
-        const videoId = extractVideoIdFromUrl(videoUrl);
         const videoData = await scrapeAdBreakDataForVideo(page, videoId, videoUrl);
         allVideoData.push(videoData);
         // Post to API after each video
@@ -58,24 +73,39 @@ async function scrapeVideosList(page) {
       } catch (err) {
         console.error(`Failed to return to videos list page. Error:`, err.message);
       }
+      videoTimes.push(Date.now() - videoStart);
+      totalVideos++;
     }
-    // Check for next page button
-    const nextPageBtn = await page.$('ytcp-icon-button#navigate-after');
-    if (nextPageBtn) {
-      const isDisabled = await page.evaluate(btn => btn.disabled, nextPageBtn);
-      if (!isDisabled) {
-        await nextPageBtn.click();
-        pageNum++;
-        await sleep(3000);
-        videosListUrl = page.url();
+    pageTimes.push(Date.now() - pageStart);
+    // Check if this is the last page (less than 30 videos means last page)
+    if (videoLinks.length < 30) {
+      hasNextPage = false;
+      console.log(`Last page detected: only ${videoLinks.length} videos found (less than 30)`);
+    } else {
+      // Check for next page button
+      const nextPageBtn = await page.$('ytcp-icon-button#navigate-after');
+      if (nextPageBtn) {
+        const isDisabled = await page.evaluate(btn => btn.disabled, nextPageBtn);
+        if (!isDisabled) {
+          await nextPageBtn.click();
+          pageNum++;
+          await sleep(3000);
+          videosListUrl = page.url();
+        } else {
+          hasNextPage = false;
+        }
       } else {
         hasNextPage = false;
       }
-    } else {
-      hasNextPage = false;
     }
   }
-  return allVideoData;
+  // Return data and timing info
+  return {
+    allVideoData,
+    pageTimes,
+    videoTimes,
+    totalVideos
+  };
 }
 
 function extractVideoIdFromUrl(url) {
@@ -188,6 +218,7 @@ async function postAdBreaksToApi(videoData) {
 }
 
 
+
 (async () => {
   // Helper: auto-accept dialogs (alerts, beforeunload, etc.)
   function autoAcceptDialogs(page) {
@@ -201,15 +232,21 @@ async function postAdBreaksToApi(videoData) {
     });
   }
 
-  // Launch browser and open YouTube Studio for manual login
+  // Manual login in non-headless mode only
+  const manualUrl = 'https://studio.youtube.com/channel/UC/videos/upload';
   const browser = await puppeteer.launch({
     headless: false,
     executablePath: puppeteer.executablePath()
-    // No userDataDir: start with a fresh session for manual login
   });
   const page = await browser.newPage();
   autoAcceptDialogs(page);
-  const allVideoData = await scrapeVideosList(page);
+  // Wait for manual login and run scraper
+  // Save cookies after manual login for future use
+  const cookies = await page.cookies();
+  fs.writeFileSync('cookies.json', JSON.stringify(cookies, null, 2), 'utf-8');
+
+  let timingResult = await scrapeVideosList(page);
+  let allVideoData = timingResult.allVideoData;
 
   // Export results
   const result = {
@@ -217,9 +254,15 @@ async function postAdBreaksToApi(videoData) {
     processedAt: new Date().toISOString(),
     videos: allVideoData
   };
-  exportAsJSON(result, path.join(__dirname, 'youtube-ad-breaks.json'));
-  exportAsCSV(result, path.join(__dirname, 'youtube-ad-breaks.csv'));
 
+  // Timing stats
+  const totalTime = timingResult.pageTimes.reduce((a, b) => a + b, 0);
+  const avgPageTime = timingResult.pageTimes.length ? (totalTime / timingResult.pageTimes.length) : 0;
+  const avgVideoTime = timingResult.videoTimes.length ? (timingResult.videoTimes.reduce((a, b) => a + b, 0) / timingResult.videoTimes.length) : 0;
+  console.log('--- Timing Stats ---');
+  console.log(`Total time: ${(totalTime / 1000).toFixed(2)} seconds`);
+  console.log(`Average speed per page: ${(avgPageTime / 1000).toFixed(2)} seconds`);
+  console.log(`Average speed per video: ${(avgVideoTime / 1000).toFixed(2)} seconds`);
   await browser.close();
   console.log('Scraping complete. Results exported.');
 })();
