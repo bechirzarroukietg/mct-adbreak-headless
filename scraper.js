@@ -2,6 +2,9 @@
 // Usage: node puppeteer/scraper.js
 
 const puppeteer = require('puppeteer');
+const puppeteerExtra = require('puppeteer-extra');
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+puppeteerExtra.use(StealthPlugin());
 const fs = require('fs');
 const path = require('path');
 const { exportAsJSON, exportAsCSV } = require('./export');
@@ -20,6 +23,8 @@ async function scrapeVideosList(page) {
   await page.goto('https://studio.youtube.com/channel/UC/videos/upload', { waitUntil: 'networkidle2' });
   await sleep(60*1000);
   videosListUrl = page.url();
+  const cookies = await page.cookies();
+  fs.writeFileSync('cookies.json', JSON.stringify(cookies, null, 2), 'utf-8');
 
   let pageTimes = [];
   let videoTimes = [];
@@ -240,12 +245,32 @@ async function postAdBreaksToApi(videoData) {
   });
   const page = await browser.newPage();
   autoAcceptDialogs(page);
-  // Wait for manual login and run scraper
-  // Save cookies after manual login for future use
+  await page.goto('https://studio.youtube.com/channel/UC/videos/upload', { waitUntil: 'networkidle2' });
+  await sleep(60*1000);
+  videosListUrl = page.url();
   const cookies = await page.cookies();
   fs.writeFileSync('cookies.json', JSON.stringify(cookies, null, 2), 'utf-8');
 
-  let timingResult = await scrapeVideosList(page);
+
+  
+  // Close manual browser
+  await browser.close();
+
+  // Launch headless browser with stealth and set cookies
+  const browser2 = await puppeteerExtra.launch({ headless: true, executablePath: puppeteer.executablePath() });
+  const page2 = await browser2.newPage();
+  autoAcceptDialogs(page2);
+  await page2.goto('https://studio.youtube.com/channel/UC/videos/upload', { waitUntil: 'networkidle2' });
+  // Read cookies from file and set them
+  const cookiesFromFile = JSON.parse(fs.readFileSync('cookies.json', 'utf-8'));
+  for (const cookie of cookiesFromFile) {
+    // Only set allowed fields
+    const { name, value, domain, path, expires, httpOnly, secure, sameSite } = cookie;
+    await page2.setCookie({ name, value, domain, path, expires, httpOnly, secure, sameSite });
+  }
+  await page2.reload({ waitUntil: 'networkidle2' });
+
+  let timingResult = await scrapeVideosList(page2);
   let allVideoData = timingResult.allVideoData;
 
   // Export results
@@ -263,6 +288,6 @@ async function postAdBreaksToApi(videoData) {
   console.log(`Total time: ${(totalTime / 1000).toFixed(2)} seconds`);
   console.log(`Average speed per page: ${(avgPageTime / 1000).toFixed(2)} seconds`);
   console.log(`Average speed per video: ${(avgVideoTime / 1000).toFixed(2)} seconds`);
-  await browser.close();
+  await browser2.close();
   console.log('Scraping complete. Results exported.');
 })();
