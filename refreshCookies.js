@@ -4,10 +4,10 @@ puppeteerExtra.use(StealthPlugin());
 const fs = require('fs');
 
 async function refreshCookies() {
-  console.log('Starting cookie refresh process...');
+  console.log('Starting automatic cookie refresh process...');
   
   const browser = await puppeteerExtra.launch({
-    headless: false, // Show browser for manual login
+    headless: true, // Run headless for automatic refresh
     args: [
       '--no-sandbox', 
       '--disable-setuid-sandbox',
@@ -30,44 +30,40 @@ async function refreshCookies() {
   });
 
   try {
-    // Load existing cookies if they exist
-    try {
-      const existingCookies = JSON.parse(fs.readFileSync('cookies.json', 'utf-8'));
-      for (const cookie of existingCookies) {
-        const allowed = ['name', 'value', 'domain', 'path', 'expires', 'httpOnly', 'secure', 'sameSite'];
-        const filteredCookie = Object.fromEntries(Object.entries(cookie).filter(([key]) => allowed.includes(key)));
-        await page.setCookie(filteredCookie);
-      }
-      console.log('Loaded existing cookies');
-    } catch (err) {
-      console.log('No existing cookies found, starting fresh');
+    // Load existing cookies from cookies.json
+    console.log('Loading existing cookies from cookies.json...');
+    const existingCookies = JSON.parse(fs.readFileSync('cookies.json', 'utf-8'));
+    
+    for (const cookie of existingCookies) {
+      const allowed = ['name', 'value', 'domain', 'path', 'expires', 'httpOnly', 'secure', 'sameSite'];
+      const filteredCookie = Object.fromEntries(Object.entries(cookie).filter(([key]) => allowed.includes(key)));
+      await page.setCookie(filteredCookie);
     }
+    console.log(`Loaded ${existingCookies.length} existing cookies`);
 
     // Navigate to YouTube Studio
     console.log('Navigating to YouTube Studio...');
     await page.goto('https://studio.youtube.com/', { waitUntil: 'networkidle2' });
     
-    console.log('\n=== MANUAL ACTION REQUIRED ===');
-    console.log('1. Please complete the login process in the browser window');
-    console.log('2. Navigate to your channel videos page');
-    console.log('3. Press ENTER in this terminal when ready to save cookies');
-    console.log('================================\n');
+    // First refresh
+    console.log('Performing first page refresh...');
+    await page.reload({ waitUntil: 'networkidle2' });
+    await new Promise(resolve => setTimeout(resolve, 3000)); // Wait 3 seconds
     
-    // Wait for user input
-    await new Promise(resolve => {
-      process.stdin.once('data', () => {
-        resolve();
-      });
-    });
+    // Second refresh
+    console.log('Performing second page refresh...');
+    await page.reload({ waitUntil: 'networkidle2' });
+    await new Promise(resolve => setTimeout(resolve, 3000)); // Wait 3 seconds
     
-    // Get all cookies from the current session
-    const cookies = await page.cookies();
+    // Get updated cookies
+    console.log('Extracting refreshed cookies...');
+    const refreshedCookies = await page.cookies();
     
-    // Save cookies to file
-    fs.writeFileSync('cookies.json', JSON.stringify(cookies, null, 2), 'utf-8');
+    // Save refreshed cookies to file
+    fs.writeFileSync('cookies.json', JSON.stringify(refreshedCookies, null, 2), 'utf-8');
     
-    console.log(`✅ Successfully saved ${cookies.length} cookies to cookies.json`);
-    console.log('Cookie refresh completed!');
+    console.log(`✅ Successfully refreshed and saved ${refreshedCookies.length} cookies to cookies.json`);
+    console.log('Cookie refresh completed automatically!');
     
   } catch (error) {
     console.error('Error during cookie refresh:', error.message);
