@@ -229,7 +229,13 @@ function autoAcceptDialogs(page) {
 async function scrapeChannel(channelId, cookies) {
   const browser = await puppeteerExtra.launch({
     headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox']
+    args: [
+      '--no-sandbox', 
+      '--disable-setuid-sandbox',
+      '--disable-features=VizDisplayCompositor',
+      '--disable-web-security',
+      '--disable-features=SameSiteByDefaultCookies,CookiesWithoutSameSiteMustBeSecure'
+    ]
   });
   const page = await browser.newPage();
   autoAcceptDialogs(page);
