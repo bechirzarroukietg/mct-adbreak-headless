@@ -254,13 +254,19 @@ async function scrapeChannel(channelId, cookies) {
 
 (async () => {
   try {
-    // Read channel ID from videosListUrl.txt
-    const urlContent = fs.readFileSync('videosListUrl.txt', 'utf-8').trim();
-    const channelIdMatch = urlContent.match(/\/channel\/([^\/]+)/);
-    if (!channelIdMatch) {
-      throw new Error('Could not extract channel ID from videosListUrl.txt');
+    let channelId = 'UC-zmWOWxD_NBVMPrJFCZagQ'; // Default channel ID
+    
+    // Try to read channel ID from videosListUrl.txt if it exists
+    try {
+      const urlContent = fs.readFileSync('videosListUrl.txt', 'utf-8').trim();
+      const channelIdMatch = urlContent.match(/\/channel\/([^\/]+)/);
+      if (channelIdMatch) {
+        channelId = channelIdMatch[1];
+        console.log(`Using channel ID from videosListUrl.txt: ${channelId}`);
+      }
+    } catch (err) {
+      console.log(`videosListUrl.txt not found, using default channel ID: ${channelId}`);
     }
-    const channelId = channelIdMatch[1];
     
     // Read cookies from cookies.json
     const cookies = JSON.parse(fs.readFileSync('cookies.json', 'utf-8'));
