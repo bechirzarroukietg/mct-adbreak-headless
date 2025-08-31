@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8">
+    <title>YouTube Ad Break Scraper</title>
+    <style>
+      body { font-family: Arial, sans-serif; margin: 30px; }
+      #output { white-space: pre-wrap; background: #f0f0f0; padding: 10px; height: 120px; overflow-y: auto; }
+      button { padding: 10px 20px; font-size: 16px; }
+    </style>
+  </head>
+  <body>
+    <h2>YouTube Ad Break Scraper</h2>
+    <button id="start">Start Scraper</button>
+    <div id="output"></div>
+    <script>
+      const { ipcRenderer } = require('electron');
+      document.getElementById('start').onclick = () => {
+        document.getElementById('output').textContent = 'Running...';
+        ipcRenderer.send('run-scraper');
+      };
+      ipcRenderer.on('scraper-output', (event, data) => {
+        document.getElementById('output').textContent += '\n' + data;
+      });
+    </script>
+  </body>
+</html>

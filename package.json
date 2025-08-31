@@ -7,6 +7,9 @@
     "start": "node scraper.js"
   },
   "dependencies": {
+    "cors": "^2.8.5",
+    "electron": "^37.2.5",
+    "express": "^5.1.0",
     "node-fetch": "^2.6.7",
     "puppeteer": "^22.8.2",
     "puppeteer-extra": "^3.3.6",

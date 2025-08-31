@@ -1,93 +1,96 @@
-// Main entry point for Puppeteer-based YouTube ad break scraper
-// Usage: node puppeteer/scraper.js
 
-const puppeteer = require('puppeteer');
+
+const express = require('express');
+const bodyParser = require('body-parser');
+const cors = require('cors');
 const puppeteerExtra = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 puppeteerExtra.use(StealthPlugin());
-const fs = require('fs');
-const path = require('path');
 const { exportAsJSON, exportAsCSV } = require('./export');
 const { sleep } = require('./utils');
-const fetch = require('node-fetch');
+const app = express();
+app.use(cors({
+  origin: 'http://localhost:4200',
+  credentials: true
+}));
+app.use(bodyParser.json());
 
+function extractVideoIdFromUrl(url) {
+  const match = url.match(/\/video\/([a-zA-Z0-9_-]+)/);
+  return match ? match[1] : null;
+}
 
-
-async function scrapeVideosList(page) {
+async function scrapeVideosList(page, channelId) {
   let allVideoData = [];
   let pageNum = 1;
   let hasNextPage = true;
-  let videosListUrl = '';
+  let videosListUrl = `https://studio.youtube.com/channel/${channelId}/videos/upload`;
 
-  // Go to videos list page
-  await page.goto('https://studio.youtube.com/channel/UC/videos/upload', { waitUntil: 'networkidle2' });
-  await sleep(60*1000);
-  videosListUrl = page.url();
-  const cookies = await page.cookies();
-  fs.writeFileSync('cookies.json', JSON.stringify(cookies, null, 2), 'utf-8');
+  await page.goto(videosListUrl, { waitUntil: 'networkidle2' });
+  await sleep(10000); // Wait for page to load
 
   let pageTimes = [];
   let videoTimes = [];
   let totalVideos = 0;
-  let processedVideoIds = new Set(); // Keep track of processed video IDs
+  let processedVideoIds = new Set();
   while (hasNextPage) {
     const pageStart = Date.now();
-    console.log(`Scraping videos list page ${pageNum}...`);
-    // Wait for thumbnails to load
+    console.log(`Scraping videos list page ${pageNum} for channel ${channelId}...`);
     await page.waitForSelector('div#video-thumbnail a#thumbnail-anchor', { timeout: 15000 });
     const videoLinks = await page.$$eval('div#video-thumbnail a#thumbnail-anchor', els => els.map(e => e.href));
     console.log(`Found ${videoLinks.length} videos on page ${pageNum}`);
 
-    for (let i = 0; i < videoLinks.length; i++) {
-      const videoStart = Date.now();
-      const videoUrl = videoLinks[i];
-      const videoId = extractVideoIdFromUrl(videoUrl);
-      
-      // Check if we've already processed this video
-      if (processedVideoIds.has(videoId)) {
-        console.log(`⚠️  Duplicate video detected: ${videoId} - Already processed, skipping.`);
-        continue;
-      }
-      
-      console.log(`Processing video ${i + 1} of ${videoLinks.length}: ${videoUrl}`);
-      processedVideoIds.add(videoId); // Mark as processed
-      
-      try {
-        await page.goto(videoUrl, { waitUntil: 'networkidle2', timeout: 90000 }); // 90 seconds
-        await sleep(3000);
-        // Click editor tab if present
+    // Process multiple video pages in parallel
+    const concurrency = 5; // Number of pages to process at once
+    let index = 0;
+    async function processBatch(batch) {
+      return await Promise.all(batch.map(async (videoUrl, i) => {
+        const videoStart = Date.now();
+        const videoId = extractVideoIdFromUrl(videoUrl);
+        if (processedVideoIds.has(videoId)) {
+          console.log(`⚠️  Duplicate video detected: ${videoId} - Already processed, skipping.`);
+          return null;
+        }
+        processedVideoIds.add(videoId);
+        console.log(`Processing video ${index + i + 1} of ${videoLinks.length}: ${videoUrl}`);
+        let videoData = null;
         try {
-          const menuItem2 = await page.$('a#menu-item-2');
-          if (menuItem2) {
-            await menuItem2.click();
-            await sleep(2000);
-          }
-        } catch (e) { console.log('Editor tab not found or click failed'); }
-        // Scrape ad break data
-        const videoData = await scrapeAdBreakDataForVideo(page, videoId, videoUrl);
-        allVideoData.push(videoData);
-        // Post to API after each video
-        await postAdBreaksToApi(videoData);
-      } catch (err) {
-        console.error(`Failed to load video page: ${videoUrl} - Skipping. Error:`, err.message);
-      }
-      // Go back to videos list page
-      try {
-        await page.goto(videosListUrl, { waitUntil: 'networkidle2', timeout: 90000 });
-        await sleep(2000);
-      } catch (err) {
-        console.error(`Failed to return to videos list page. Error:`, err.message);
-      }
-      videoTimes.push(Date.now() - videoStart);
-      totalVideos++;
+          // Open a new browser page for each video
+          const videoPage = await page.browser().newPage();
+          await videoPage.goto(videoUrl, { waitUntil: 'networkidle2', timeout: 90000 });
+          await sleep(3000);
+          try {
+            const menuItem2 = await videoPage.$('a#menu-item-2');
+            if (menuItem2) {
+              await menuItem2.click();
+              await sleep(2000);
+            }
+          } catch (e) { console.log('Editor tab not found or click failed'); }
+          // Take screenshot right before scraping ad breaks
+          await videoPage.screenshot({ path: `screenshot-${videoId}.png` });
+          videoData = await scrapeAdBreakDataForVideo(videoPage, videoId, videoUrl);
+          await postAdBreaksToApi(videoData);
+          await videoPage.close();
+        } catch (err) {
+          console.error(`Failed to load video page: ${videoUrl} - Skipping. Error:`, err.message);
+        }
+        videoTimes.push(Date.now() - videoStart);
+        totalVideos++;
+        return videoData;
+      }));
+    }
+
+    while (index < videoLinks.length) {
+      const batch = videoLinks.slice(index, index + concurrency);
+      const batchResults = await processBatch(batch);
+      allVideoData.push(...batchResults.filter(Boolean));
+      index += concurrency;
     }
     pageTimes.push(Date.now() - pageStart);
-    // Check if this is the last page (less than 30 videos means last page)
     if (videoLinks.length < 30) {
       hasNextPage = false;
       console.log(`Last page detected: only ${videoLinks.length} videos found (less than 30)`);
     } else {
-      // Check for next page button
       const nextPageBtn = await page.$('ytcp-icon-button#navigate-after');
       if (nextPageBtn) {
         const isDisabled = await page.evaluate(btn => btn.disabled, nextPageBtn);
@@ -104,18 +107,12 @@ async function scrapeVideosList(page) {
       }
     }
   }
-  // Return data and timing info
   return {
     allVideoData,
     pageTimes,
     videoTimes,
     totalVideos
   };
-}
-
-function extractVideoIdFromUrl(url) {
-  const match = url.match(/\/video\/([a-zA-Z0-9_-]+)/);
-  return match ? match[1] : null;
 }
 
 async function scrapeAdBreakDataForVideo(page, videoId, videoUrl) {
@@ -224,70 +221,60 @@ async function postAdBreaksToApi(videoData) {
 
 
 
-(async () => {
-  // Helper: auto-accept dialogs (alerts, beforeunload, etc.)
-  function autoAcceptDialogs(page) {
-    page.on('dialog', async dialog => {
-      try {
-        await dialog.accept();
-        console.log('Dialog automatically accepted:', dialog.message());
-      } catch (e) {
-        console.log('Failed to accept dialog:', e.message);
-      }
-    });
-  }
 
-  // Manual login in non-headless mode only
-  const manualUrl = 'https://studio.youtube.com/channel/UC/videos/upload';
-  const browser = await puppeteer.launch({
-    headless: false,
-    executablePath: puppeteer.executablePath()
+
+function autoAcceptDialogs(page) {
+  page.on('dialog', async dialog => {
+    try {
+      await dialog.accept();
+      console.log('Dialog automatically accepted:', dialog.message());
+    } catch (e) {
+      console.log('Failed to accept dialog:', e.message);
+    }
+  });
+}
+
+async function scrapeChannel(channelId, cookies) {
+  const browser = await puppeteerExtra.launch({
+    headless: true,
+    args: ['--no-sandbox', '--disable-setuid-sandbox']
   });
   const page = await browser.newPage();
   autoAcceptDialogs(page);
-  await page.goto('https://studio.youtube.com/channel/UC/videos/upload', { waitUntil: 'networkidle2' });
-  await sleep(60*1000);
-  videosListUrl = page.url();
-  const cookies = await page.cookies();
-  fs.writeFileSync('cookies.json', JSON.stringify(cookies, null, 2), 'utf-8');
-
-
-  
-  // Close manual browser
-  await browser.close();
-
-  // Launch headless browser with stealth and set cookies
-  const browser2 = await puppeteerExtra.launch({ headless: true, executablePath: puppeteer.executablePath() });
-  const page2 = await browser2.newPage();
-  autoAcceptDialogs(page2);
-  await page2.goto('https://studio.youtube.com/channel/UC/videos/upload', { waitUntil: 'networkidle2' });
-  // Read cookies from file and set them
-  const cookiesFromFile = JSON.parse(fs.readFileSync('cookies.json', 'utf-8'));
-  for (const cookie of cookiesFromFile) {
-    // Only set allowed fields
-    const { name, value, domain, path, expires, httpOnly, secure, sameSite } = cookie;
-    await page2.setCookie({ name, value, domain, path, expires, httpOnly, secure, sameSite });
+  // Set cookies for this channel
+  for (const cookie of cookies) {
+    const allowed = ['name', 'value', 'domain', 'path', 'expires', 'httpOnly', 'secure', 'sameSite'];
+    const filteredCookie = Object.fromEntries(Object.entries(cookie).filter(([key]) => allowed.includes(key)));
+    await page.setCookie(filteredCookie);
   }
-  await page2.reload({ waitUntil: 'networkidle2' });
-
-  let timingResult = await scrapeVideosList(page2);
+  await page.reload({ waitUntil: 'networkidle2' });
+  let timingResult = await scrapeVideosList(page, channelId);
   let allVideoData = timingResult.allVideoData;
-
-  // Export results
   const result = {
+    channelId,
     totalVideos: allVideoData.length,
     processedAt: new Date().toISOString(),
     videos: allVideoData
   };
+  await browser.close();
+  return result;
+}
 
-  // Timing stats
-  const totalTime = timingResult.pageTimes.reduce((a, b) => a + b, 0);
-  const avgPageTime = timingResult.pageTimes.length ? (totalTime / timingResult.pageTimes.length) : 0;
-  const avgVideoTime = timingResult.videoTimes.length ? (timingResult.videoTimes.reduce((a, b) => a + b, 0) / timingResult.videoTimes.length) : 0;
-  console.log('--- Timing Stats ---');
-  console.log(`Total time: ${(totalTime / 1000).toFixed(2)} seconds`);
-  console.log(`Average speed per page: ${(avgPageTime / 1000).toFixed(2)} seconds`);
-  console.log(`Average speed per video: ${(avgVideoTime / 1000).toFixed(2)} seconds`);
-  await browser2.close();
-  console.log('Scraping complete. Results exported.');
-})();
+app.post('/scrape', async (req, res) => {
+  const { channelId, cookies } = req.body;
+  console.log('Received cookies:', cookies);
+  if (!channelId || !Array.isArray(cookies)) {
+    return res.status(400).json({ error: 'channelId and cookies array required' });
+  }
+  try {
+    const result = await scrapeChannel(channelId, cookies);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Scraper server listening on port ${PORT}`);
+});
