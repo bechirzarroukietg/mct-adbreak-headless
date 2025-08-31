@@ -1,19 +1,11 @@
 
 
-const express = require('express');
-const bodyParser = require('body-parser');
-const cors = require('cors');
 const puppeteerExtra = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 puppeteerExtra.use(StealthPlugin());
+const fs = require('fs');
 const { exportAsJSON, exportAsCSV } = require('./export');
 const { sleep } = require('./utils');
-const app = express();
-app.use(cors({
-  origin: 'http://localhost:4200',
-  credentials: true
-}));
-app.use(bodyParser.json());
 
 function extractVideoIdFromUrl(url) {
   const match = url.match(/\/video\/([a-zA-Z0-9_-]+)/);
@@ -260,21 +252,26 @@ async function scrapeChannel(channelId, cookies) {
   return result;
 }
 
-app.post('/scrape', async (req, res) => {
-  const { channelId, cookies } = req.body;
-  console.log('Received cookies:', cookies);
-  if (!channelId || !Array.isArray(cookies)) {
-    return res.status(400).json({ error: 'channelId and cookies array required' });
-  }
+(async () => {
   try {
+    // Read channel ID from videosListUrl.txt
+    const urlContent = fs.readFileSync('videosListUrl.txt', 'utf-8').trim();
+    const channelIdMatch = urlContent.match(/\/channel\/([^\/]+)/);
+    if (!channelIdMatch) {
+      throw new Error('Could not extract channel ID from videosListUrl.txt');
+    }
+    const channelId = channelIdMatch[1];
+    
+    // Read cookies from cookies.json
+    const cookies = JSON.parse(fs.readFileSync('cookies.json', 'utf-8'));
+    
+    console.log(`Starting scrape for channel: ${channelId}`);
     const result = await scrapeChannel(channelId, cookies);
-    res.json(result);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+    
+    // Export results
+    await exportAsJSON(result, `scrape-results-${channelId}-${Date.now()}.json`);
+    console.log(`Scraping completed. Total videos: ${result.totalVideos}`);
+  } catch (error) {
+    console.error('Scraping failed:', error.message);
   }
-});
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Scraper server listening on port ${PORT}`);
-});
+})();
